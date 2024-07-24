@@ -27,6 +27,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import site.ycsb.db.flavors.DBFlavor;
+import site.ycsb.db.flavors.PhoenixDBFlavor;
 
 /**
  * A class that wraps a JDBC compliant database to allow it to be interfaced
@@ -67,6 +68,8 @@ public class JdbcDBClient extends DB {
 
   public static final String JDBC_BATCH_UPDATES = "jdbc.batchupdateapi";
 
+  public static final String PHOENIX_USEJSON = "phoenix.usejson";
+
   /** The name of the property for the number of fields in a record. */
   public static final String FIELD_COUNT_PROPERTY = "fieldcount";
 
@@ -90,6 +93,7 @@ public class JdbcDBClient extends DB {
   private List<Connection> conns;
   private boolean initialized = false;
   private Properties props;
+  private boolean useJson;
   private int jdbcFetchSize;
   private int batchSize;
   private boolean autoCommit;
@@ -187,6 +191,7 @@ public class JdbcDBClient extends DB {
     String user = props.getProperty(CONNECTION_USER, DEFAULT_PROP);
     String passwd = props.getProperty(CONNECTION_PASSWD, DEFAULT_PROP);
     String driver = props.getProperty(DRIVER_CLASS);
+    useJson = props.getProperty(PHOENIX_USEJSON, "false").equals("true");
 
     this.jdbcFetchSize = getIntProperty(props, JDBC_FETCH_SIZE);
     this.batchSize = getIntProperty(props, DB_BATCH_SIZE);
@@ -239,7 +244,7 @@ public class JdbcDBClient extends DB {
 
       cachedStatements = new ConcurrentHashMap<StatementType, PreparedStatement>();
 
-      this.dbFlavor = DBFlavor.fromJdbcUrl(urlArr[0]);
+      this.dbFlavor = DBFlavor.fromJdbcUrl(urlArr[0], useJson);
     } catch (ClassNotFoundException e) {
       System.err.println("Error in initializing the JDBS driver: " + e);
       throw new DBException(e);
@@ -350,6 +355,9 @@ public class JdbcDBClient extends DB {
         resultSet.close();
         return Status.NOT_FOUND;
       }
+      if (useJson) {
+        fields = Collections.singleton(PhoenixDBFlavor.JSON_COLUMN_NAME);
+      }
       if (result != null && fields != null) {
         for (String field : fields) {
           String value = resultSet.getString(field);
@@ -383,6 +391,9 @@ public class JdbcDBClient extends DB {
         scanStatement.setInt(2, recordcount);
       }
       ResultSet resultSet = scanStatement.executeQuery();
+      if (useJson) {
+        fields = Collections.singleton(PhoenixDBFlavor.JSON_COLUMN_NAME);
+      }
       for (int i = 0; i < recordcount && resultSet.next(); i++) {
         if (result != null && fields != null) {
           HashMap<String, ByteIterator> values = new HashMap<String, ByteIterator>();
@@ -413,10 +424,15 @@ public class JdbcDBClient extends DB {
         updateStatement = createAndCacheUpdateStatement(type, key);
       }
       int index = 1;
-      for (String value: fieldInfo.getFieldValues()) {
-        updateStatement.setString(index++, value);
+      if (!useJson) {
+        for (String value : fieldInfo.getFieldValues()) {
+          updateStatement.setString(index++, value);
+        }
+        updateStatement.setString(index, key);
+      } else {
+        updateStatement.setString(1, key);
+        updateStatement.setString(2, PhoenixDBFlavor.encode(values));
       }
-      updateStatement.setString(index, key);
       int result = updateStatement.executeUpdate();
       if (result == 1) {
         return Status.OK;
@@ -441,8 +457,12 @@ public class JdbcDBClient extends DB {
       }
       insertStatement.setString(1, key);
       int index = 2;
-      for (String value: fieldInfo.getFieldValues()) {
-        insertStatement.setString(index++, value);
+      if (!useJson) {
+        for (String value : fieldInfo.getFieldValues()) {
+          insertStatement.setString(index++, value);
+        }
+      } else {
+        insertStatement.setString(2, PhoenixDBFlavor.encode(values));
       }
       // Using the batch insert API
       if (batchUpdates) {

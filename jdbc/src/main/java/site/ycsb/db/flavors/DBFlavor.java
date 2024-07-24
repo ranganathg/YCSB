@@ -35,9 +35,9 @@ public abstract class DBFlavor {
     this.dbName = dbName;
   }
 
-  public static DBFlavor fromJdbcUrl(String url) {
+  public static DBFlavor fromJdbcUrl(String url, boolean useJson) {
     if (url.startsWith("jdbc:phoenix")) {
-      return new PhoenixDBFlavor();
+      return new PhoenixDBFlavor(useJson);
     }
     return new DefaultDBFlavor();
   }
